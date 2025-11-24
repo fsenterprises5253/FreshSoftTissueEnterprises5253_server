@@ -44,7 +44,8 @@ router.get("/view/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    const [billRows] = await db.query(`
+    const [billRows] = await db.query(
+      `
       SELECT 
         MIN(id) as id,
         CONCAT('INV-', LPAD(MIN(id), 4, '0')) AS bill_number,
@@ -61,9 +62,12 @@ router.get("/view/:id", async (req, res) => {
         SELECT bill_date FROM billing WHERE id = ?
       )
       GROUP BY customer_name, bill_date, payment_mode, status
-    `, [id, id]);
+    `,
+      [id, id]
+    );
 
-    const [items] = await db.query(`
+    const [items] = await db.query(
+      `
       SELECT id, gsm_number, description, quantity, price, total
       FROM billing
       WHERE customer_name = (
@@ -72,7 +76,9 @@ router.get("/view/:id", async (req, res) => {
       AND bill_date = (
         SELECT bill_date FROM billing WHERE id = ?
       )
-    `, [id, id]);
+    `,
+      [id, id]
+    );
 
     if (!billRows.length) {
       return res.status(404).json({ error: "Bill not found" });
@@ -80,15 +86,13 @@ router.get("/view/:id", async (req, res) => {
 
     res.json({
       bill: billRows[0],
-      items
+      items,
     });
-
   } catch (error) {
     console.error("View bill error:", error);
     res.status(500).json({ error: "Failed to fetch bill" });
   }
 });
-
 
 // ============================
 // GET SINGLE BILL (FOR EDIT PAGE)
@@ -97,7 +101,8 @@ router.get("/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    const [rows] = await db.query(`
+    const [rows] = await db.query(
+      `
       SELECT 
         CONCAT('INV-', LPAD(id, 4, '0')) AS bill_number,
         customer_name,
@@ -108,17 +113,18 @@ router.get("/:id", async (req, res) => {
       FROM billing
       WHERE id = ?
       GROUP BY customer_name, bill_date, payment_mode, status, id
-    `, [id]);
+    `,
+      [id]
+    );
 
     if (!rows.length) return res.status(404).json({ error: "Bill not found" });
 
     res.json(rows[0]);
   } catch (error) {
+    console.error("Get bill error:", error);
     res.status(500).json({ error: "Failed to load bill" });
   }
 });
-
-
 
 // ============================
 // GET BILL ITEMS (FOR EDIT PAGE)
@@ -128,47 +134,74 @@ router.get("/:id/items", async (req, res) => {
     const { id } = req.params;
 
     const [items] = await db.query(
-      `SELECT id, gsm_number, description, quantity, price, total
-       FROM billing
-       WHERE id = ?`,
+      `
+      SELECT id, gsm_number, description, quantity, price, total
+      FROM billing
+      WHERE id = ?
+    `,
       [id]
     );
 
     res.json(items);
   } catch (error) {
+    console.error("Get bill items error:", error);
     res.status(500).json({ error: "Failed to load bill items" });
   }
 });
-
 
 // ============================
 // SAVE BILL FROM FRONTEND
 // ============================
 router.post("/", async (req, res) => {
   try {
-    const { customer_name, payment_mode, status, bill_date, items, subtotal } = req.body;
+    // ✅ RESET BILL NUMBER IF ALL BILLS ARE DELETED
+    const [countResult] = await db.query(
+      "SELECT COUNT(*) AS total FROM billing"
+    );
 
+    if (countResult[0].total === 0) {
+      await db.query("ALTER TABLE billing AUTO_INCREMENT = 1");
+    }
+
+    const { customer_name, payment_mode, status, bill_date, items, subtotal } =
+      req.body;
     let lastInsertId = null;
 
     for (const item of items) {
+      const safeQuantity = Number(
+        item.quantity ?? item.stock ?? 0
+      ); // support both names from frontend
+      const safeGsm = Number(item.gsm_number);
+
       const [result] = await db.query(
-        `INSERT INTO billing 
-        (customer_name, payment_mode, status, bill_date, gsm_number, description, quantity, price, total, subtotal)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `
+        INSERT INTO billing 
+          (customer_name, payment_mode, status, bill_date, gsm_number, description, quantity, price, total, subtotal)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
         [
           customer_name,
           payment_mode,
           status,
           bill_date,
-          item.gsm_number,
+          safeGsm,
           item.description,
-          item.quantity,
+          safeQuantity,
           item.price,
           item.total,
           subtotal,
         ]
       );
+
       lastInsertId = result.insertId;
+
+      // ✅ SUBTRACT STOCK QUANTITY WHEN BILL IS CREATED
+      if (!isNaN(safeGsm) && safeQuantity > 0) {
+        await db.query(
+          "UPDATE stock_items SET stock = stock - ? WHERE gsm_number = ? AND description = ?",
+          [safeQuantity, safeGsm, item.description]
+        );
+      }
     }
 
     res.status(200).json({
@@ -178,24 +211,25 @@ router.post("/", async (req, res) => {
     });
   } catch (error) {
     console.error("Save bill error:", error);
-    // 👇 small tweak so you see the REAL DB error in frontend if it happens
     res.status(500).json({ error: error.message || "Failed to save bill" });
   }
 });
 
-
 // ============================
-// ✅ UPDATE BILL HEADER
+// UPDATE BILL HEADER
 // ============================
 router.put("/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { customer_name, payment_mode, status, bill_date, subtotal } = req.body;
+    const { customer_name, payment_mode, status, bill_date, subtotal } =
+      req.body;
 
     await db.query(
-      `UPDATE billing 
-       SET customer_name=?, payment_mode=?, status=?, bill_date=?, subtotal=?
-       WHERE id=?`,
+      `
+      UPDATE billing 
+      SET customer_name=?, payment_mode=?, status=?, bill_date=?, subtotal=?
+      WHERE id=?
+    `,
       [customer_name, payment_mode, status, bill_date, subtotal, id]
     );
 
@@ -207,89 +241,63 @@ router.put("/:id", async (req, res) => {
 });
 
 // ============================
-// ✅ UPDATE BILL ITEMS
+// UPDATE BILL ITEMS
 // ============================
 router.put("/:id/items", async (req, res) => {
   try {
     const { id } = req.params;
     const items = req.body;
 
-    // 1. Get old items to restore stock first
-    const [oldItems] = await db.query(
-      "SELECT gsm_number, quantity FROM billing WHERE id = ?",
-      [id]
-    );
-
-    // 2. Restore old stock
-    for (const old of oldItems) {
-      await db.query(
-        "UPDATE stock SET quantity = quantity + ? WHERE gsm_number = ?",
-        [old.quantity, old.gsm_number]
-      );
-    }
-
-    // 3. Delete old bill items
-    await db.query("DELETE FROM billing WHERE id = ?", [id]);
-
-    // 4. Insert new items + deduct stock safely
+    // ✅ 3. UPDATE existing rows instead of deleting
     for (const item of items) {
-      // ✅ Check stock before deduction
-      const [[stockRow]] = await db.query(
-        "SELECT quantity FROM stock WHERE gsm_number = ?",
-        [item.gsm_number]
+      const qty = Number(item.quantity);
+      const gsm = Number(item.gsm_number);
+
+      // 1. Get previous quantity of this item in the bill
+      const [oldItem] = await db.query(
+        "SELECT quantity FROM billing WHERE id = ? AND gsm_number = ? AND description = ?",
+        [id, gsm, item.description]
       );
 
-      if (!stockRow || stockRow.quantity < item.quantity) {
-        return res.status(400).json({
-          error: `Insufficient stock for GSM ${item.gsm_number}`
-        });
-      }
+      const oldQty = oldItem.length ? Number(oldItem[0].quantity) : 0;
 
-      // Insert new bill item
+      // 2. Restore old stock
       await db.query(
-        `INSERT INTO billing 
-        (id, customer_name, payment_mode, status, bill_date, gsm_number, description, quantity, price, total, subtotal)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          id,
-          item.customer_name,
-          item.payment_mode,
-          item.status,
-          item.bill_date,
-          item.gsm_number,
-          item.description,
-          item.quantity,
-          item.price,
-          item.total,
-          item.subtotal
-        ]
+        "UPDATE stock_items SET stock = stock + ? WHERE gsm_number = ? AND description = ?",
+        [oldQty, gsm, item.description]
       );
 
-      // ✅ Deduct stock correctly
+      // 3. Deduct new stock
       await db.query(
-        "UPDATE stock SET quantity = quantity - ? WHERE gsm_number = ?",
-        [item.quantity, item.gsm_number]
+        "UPDATE stock_items SET stock = stock - ? WHERE gsm_number = ? AND description = ?",
+        [qty, gsm, item.description]
+      );
+
+      // 4. Update bill row
+      await db.query(
+        `UPDATE billing 
+        SET quantity = ?, price = ?, total = ?, subtotal = ?
+        WHERE id = ? AND gsm_number = ? AND description = ?`,
+        [qty, item.price, item.total, item.total, id, gsm, item.description]
       );
     }
-
-    res.json({ success: true });
+    
+    res.json({ success: true, message: "Bill updated successfully" });
   } catch (error) {
-    console.error("Update bill items error:", error);
-    res.status(500).json({ error: "Failed to update bill items" });
+    console.error("Edit bill error:", error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-/* ===============================
-   DELETE BILL
-================================ */
+
+// ============================
+// DELETE BILL
+// ============================
 router.delete("/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    const [result] = await db.query(
-      "DELETE FROM billing WHERE id = ?",
-      [id]
-    );
+    const [result] = await db.query("DELETE FROM billing WHERE id = ?", [id]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: "Bill not found" });
