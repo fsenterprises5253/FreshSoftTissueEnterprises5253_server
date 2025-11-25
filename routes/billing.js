@@ -165,7 +165,7 @@ router.post("/", async (req, res) => {
 
     const { customer_name, payment_mode, status, bill_date, items, subtotal } =
       req.body;
-    let lastInsertId = null;
+    let billId = null;
 
     for (const item of items) {
       const safeQuantity = Number(
@@ -193,7 +193,13 @@ router.post("/", async (req, res) => {
         ]
       );
 
-      lastInsertId = result.insertId;
+      if (!billId) billId = result.insertId;
+
+      // ✅ STORE ITEM IN bill_items TABLE
+      await db.query(
+        "INSERT INTO bill_items (bill_id, gsm_number, description, quantity, price) VALUES (?, ?, ?, ?, ?)",
+        [billId, safeGsm, item.description, safeQuantity, item.price]
+      );
 
       // ✅ SUBTRACT STOCK QUANTITY WHEN BILL IS CREATED
       if (!isNaN(safeGsm) && safeQuantity > 0) {
@@ -206,8 +212,8 @@ router.post("/", async (req, res) => {
 
     res.status(200).json({
       success: true,
-      id: lastInsertId,
-      bill_number: `INV-${String(lastInsertId).padStart(4, "0")}`,
+      id: billId,
+      bill_number: `INV-${String(billId).padStart(4, "0")}`,
     });
   } catch (error) {
     console.error("Save bill error:", error);

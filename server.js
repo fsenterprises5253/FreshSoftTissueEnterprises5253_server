@@ -7,6 +7,7 @@ import db from "./db.js";
 import billingRoutes from "./routes/billing.js";
 import stockRoutes from "./routes/stock.js";
 import expensesRoutes from "./routes/expenses.js"
+import reportRoutes from "./routes/reportRoutes.js";
 
 dotenv.config();
 
@@ -26,6 +27,9 @@ app.use("/api/billing", billingRoutes);
 
 // EXPENSES → /api/expenses/**
 app.use("/api/expenses", expensesRoutes);
+
+// REPORTS → /api/reports/**
+app.use("/api", reportRoutes);
 
 // CATCH ALL
 app.use("/api/*", (req, res) => {
