@@ -83,5 +83,47 @@ router.get("/profit-ledger", async (req, res) => {
   }
 });
 
+/* ============================================================
+   ✅ PROFIT LEDGER (BULK INSERT)
+   Called from frontend syncBillsToLedger(bills[])
+   ============================================================ */
+router.post("/profit-ledger/bulk-insert", async (req, res) => {
+  const entries = req.body.entries || [];
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return res.status(400).json({ error: "No entries provided" });
+  }
+
+  try {
+    const formatted = entries.map(e => {
+      const qty = Number(e.quantity || 1);
+      const price = Number(e.price || 0);
+      const cost = Number(e.cost_price || 0);
+
+      return [
+        e.bill_id,
+        e.bill_date ? new Date(e.bill_date) : new Date(),
+        e.gsm_number || null,
+        e.description || "",
+        qty,
+        price,
+        cost,
+        price - cost,               // profit per piece
+        (price - cost) * qty        // total profit
+      ];
+    });
+
+    await db.query(
+      `INSERT IGNORE INTO profit_ledger 
+      (bill_id, bill_date, gsm_number, description, quantity, price, cost_price, profit_per_piece, total_profit)
+      VALUES ?`,
+      [formatted]
+    );
+
+    res.json({ ok: true, inserted: formatted.length });
+  } catch (err) {
+    console.error("Bulk insert error:", err);
+    res.status(500).json({ error: "Bulk insert failed", details: err.message });
+  }
+});
 
 export default router;
